@@ -304,37 +304,44 @@ function calculateDeclineEvent(dateString, previousRowData, tickers, currentPric
   Logger.log("calculateDeclineEvent 시작");
   Logger.log("이전 데이터: " + JSON.stringify(previousRowData));
   Logger.log("현재 가격: " + JSON.stringify(currentPrices));
+  Logger.log("환율: " + exchangeRate);
+  Logger.log("티커 분류: " + JSON.stringify(tickerClassifications));
   
   var totalInvestment = previousRowData.totalInvestment;
   var currentTotalValue = 0;
   var tickerData = [];
   var adjustedRatios = {};
-
+  
   // 변동성-레버리지조정 시트에서 새로운 비율 가져오기
   var newRatio = getNewRatioFromVolatilitySheet(volatilityAdjustmentSheet, triggerTicker, event);
   adjustedRatios[triggerTicker] = newRatio;
   Logger.log("새로운 비율: " + JSON.stringify(adjustedRatios));
-
+  
   // 초기 ratio 계산
   var initialRatios = {};
   tickers.forEach((ticker, index) => {
-    var currentValue = previousRowData.shares[index] * currentPrices[index];
+    var classification = tickerClassifications[ticker];
+    var originalPrice = currentPrices[index];
+    var calculationPrice = calculatePriceInKRW(ticker, originalPrice, exchangeRate, classification);
+    var shares = processShares(previousRowData.shares[index], classification);
+    var currentValue = calculationPrice * shares;
     initialRatios[ticker] = currentValue / totalInvestment;
   });
   Logger.log("초기 비율: " + JSON.stringify(initialRatios));
-
+  
   // 새로운 비율 합 계산
   var newTotalRatio = Object.values(initialRatios).reduce((sum, ratio) => sum + ratio, 0) - initialRatios[triggerTicker] + newRatio;
   
   // 초과 비율 계산 (1을 초과할 때만)
   var excessRatio = Math.max(0, newTotalRatio - 1);
   Logger.log("새로운 총 비율: " + newTotalRatio + ", 초과 비율: " + excessRatio);
-
+  
   tickers.forEach((ticker, index) => {
     var classification = tickerClassifications[ticker];
-    var currentPrice = calculatePriceInKRW(ticker, currentPrices[index], exchangeRate, classification);
+    var originalPrice = currentPrices[index];
+    var calculationPrice = calculatePriceInKRW(ticker, originalPrice, exchangeRate, classification);
+    
     var ratio;
-
     if (ticker === triggerTicker) {
       ratio = adjustedRatios[ticker];
     } else if (excessRatio > 0) {
@@ -344,31 +351,24 @@ function calculateDeclineEvent(dateString, previousRowData, tickers, currentPric
     } else {
       ratio = initialRatios[ticker];
     }
-
+    
     // 새로운 주식 수 계산
-    var newShares = processShares((ratio * totalInvestment) / currentPrice, classification);
-    var value = currentPrice * newShares;
+    var newShares = processShares((ratio * totalInvestment) / calculationPrice, classification);
+    var value = calculationPrice * newShares;
     currentTotalValue += value;
-
-    // 실제 비율 계산 (셀 참조 형식으로)
-    var column = getColumnName(6 + index * 3);  // F, I, L 등의 형식
-    var ratioFormula = `=${column}${newRowNumber}*${getColumnName(7 + index * 3)}${newRowNumber}/B${newRowNumber}`;  // F7*G7/B7, I7*J7/B7 등의 형식
-
-    tickerData.push(currentPrice, newShares, ratioFormula);
-    Logger.log(ticker + " 데이터: 가격=" + currentPrice + ", 주식 수=" + newShares + ", 비율 공식=" + ratioFormula);
+    
+    // 비율을 퍼센트로 계산
+    var assetRatio = (value / totalInvestment) * 100;
+    tickerData.push(originalPrice, newShares, assetRatio.toFixed(2) + '%');
+    Logger.log(ticker + " 데이터: 원래 가격=" + originalPrice + ", 계산용 가격=" + calculationPrice + ", 주식 수=" + newShares + ", 비율=" + assetRatio.toFixed(2) + '%');
   });
-
-  var ratioFormula = `=C${newRowNumber}/B${newRowNumber}`;  // 총 비율 계산 공식
+  
+  var totalRatio = (currentTotalValue / totalInvestment) * 100;
   var eventName = event.includes("단계 하락") ? `${event} (${triggerTicker})` : event;
-
-  Logger.log("계산 결과: 총 투자금=" + totalInvestment + ", 현재 총 가치=" + currentTotalValue + ", 비율 공식=" + ratioFormula);
-
-  // 환율 정보 추가
-  var exchangeRateData = [exchangeRates.USDKRW];
-
-  return [dateString, totalInvestment, currentTotalValue, ratioFormula, eventName]
-    .concat(tickerData)
-    .concat([exchangeRate]);
+  Logger.log("계산 결과: 총 투자금=" + totalInvestment + ", 현재 총 가치=" + currentTotalValue + ", 총 비율=" + totalRatio.toFixed(2) + '%');
+  
+  return [dateString, totalInvestment, currentTotalValue, totalRatio.toFixed(2) + '%', eventName, exchangeRate]
+    .concat(tickerData);
 }
 
 function getPreviousRowData(sheet, lastRow, tickerCount) {
@@ -404,8 +404,8 @@ function testInvestmentRecord() {
   
   var tickers = ["NASDAQ:GOOGL", "NASDAQ:META", "NYSE:BRK.B", "NASDAQ:ADBE", "INDEXNASDAQ:.IXIC", "KRX:005935", "KOSDAQ:058470", "KOSDAQ:074600", "KRX:097955", "KOSDAQ:140860", "KRX:298020", "KRX:KOSPI", "BTCUSD", "ETHUSD", "NYSEARCA:EDV"];
   var currentPrices = [157.36, 511.76, 476.83, 571.04, 17136.3, 57500, 183100, 25400, 137000, 175100, 288500, 2605.78, 56699.04, 2366.580385, 79.52];
-  var event = "매달기록";
-  var triggerTicker = null; // 매달기록에는 triggerTicker가 필요 없습니다
+  var event = "1단계 하락"; //매달기록 or 0단계 하락
+  var triggerTicker = "BTCUSD"; //
 
   updateInvestmentRecord(investmentRecordSheet, volatilityAdjustmentSheet, tickers, currentPrices, [], [], event, triggerTicker);
   
