@@ -36,19 +36,29 @@ function updateStockData() {
   var eventTicker = null;
   var eventType = null;
 
+  Logger.log("오늘 날짜: " + dateString);
+  Logger.log("월 첫 날 여부: " + isFirstDayOfMonth);
+
   var currentPrices = [];
   var highPrices = [];
   var declineRatios = [];
-
+ 
   for (var col = 2; col <= lastColumn; col++) {
     var ticker = tickers[col - 2];
     if (!ticker) continue;
 
-    var currentPrice = dashboardSheet.getRange(currentPriceRow, col).getValue();
+    var currentPrice = getStockPrice(dashboardSheet, currentPriceRow, col, ticker);
+    if (currentPrice === null) {
+      // 가격을 받아오지 못했을 때의 처리
+      Logger.log(`${ticker}의 가격을 받아오지 못했습니다. 이 종목은 건너뜁니다.`);
+      continue;
+    }
     var highPrice = dashboardSheet.getRange(highPriceRow, col).getValue();
     var decline1 = dashboardSheet.getRange(decline1Row, col).getValue();
     var decline2 = dashboardSheet.getRange(decline2Row, col).getValue();
     var decline3 = dashboardSheet.getRange(decline3Row, col).getValue();
+
+    Logger.log("티커: " + ticker + ", 현재 가격: " + currentPrice + ", 고점: " + highPrice);
 
     currentPrices.push(currentPrice);
     highPrices.push(highPrice);
@@ -98,9 +108,33 @@ function updateStockData() {
     }
   }
 
-    // 매월 첫날이거나 이벤트가 발생했을 때 투자 기록 업데이트
+  Logger.log("이벤트 발생 여부: " + eventOccurred);
+  if (eventOccurred) {
+    Logger.log("이벤트 티커: " + eventTicker + ", 이벤트 타입: " + eventType);
+  }
+
+  // 매월 첫날이거나 이벤트가 발생했을 때 투자 기록 업데이트
   if (isFirstDayOfMonth || eventOccurred) {
+    Logger.log("투자 기록 업데이트 조건 충족");
+    Logger.log("티커 목록: " + JSON.stringify(tickers));
+    Logger.log("현재 가격 목록: " + JSON.stringify(currentPrices));
+    Logger.log("고점 목록: " + JSON.stringify(highPrices));
+    Logger.log("하락 비율 목록: " + JSON.stringify(declineRatios));
+
+    //환율 받기
+    var exchangeRate = getExchangeRate();
+    if (exchangeRate === null) {
+      Logger.log("환율을 받아오지 못했습니다. 스크립트를 종료합니다.");
+      return; // 환율을 받아오지 못하면 스크립트 종료
+    }
+    var tickerClassifications = getTickerClassifications();
+
+    Logger.log("환율: " + exchangeRate);
+    Logger.log("티커 분류: " + JSON.stringify(tickerClassifications));
+
     updateInvestmentRecord(investmentRecordSheet, volatilityAdjustmentSheet, tickers, currentPrices, highPrices, declineRatios, isFirstDayOfMonth ? "매달기록" : eventType, eventTicker);
+  } else {
+    Logger.log("투자 기록 업데이트 조건 미충족");
   }
 }
 
@@ -200,7 +234,7 @@ function recordAlert(alertSheet, ticker, event, date, currentPrice, relevantValu
 }
 
 function sendEmail(ticker, event, date, currentPrice, highPrice, declineRatio) {
-  var recipient = "your-email@example.com";  // 받는 사람의 이메일 주소로 변경하세요
+  var recipient = "dhdudwls66@gmail.com";  // 받는 사람의 이메일 주소로 변경하세요
   var subject = ticker + " - " + event + " 알림";
   var body = "종목: " + ticker + "\n" +
              "이벤트: " + event + "\n" +
@@ -258,7 +292,7 @@ function updateInvestmentRecord(investmentRecordSheet, volatilityAdjustmentSheet
 }
 
 function sendErrorEmail(subject, errorMessage) {
-  var recipient = "your-email@example.com";  // 오류 알림을 받을 이메일 주소
+  var recipient = "dhdudwls66@gmail.com";  // 오류 알림을 받을 이메일 주소
   var body = "투자 기록 업데이트 중 다음과 같은 오류가 발생했습니다:\n\n" + errorMessage;
   MailApp.sendEmail(recipient, subject, body);
 }
@@ -422,12 +456,28 @@ function getColumnName(index) {
   return columnName;
 }
 
-function getExchangeRate() {
+function getExchangeRate(maxRetries = 20, retryDelay = 2000) {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var dashboardSheet = spreadsheet.getSheetByName("대시보드");
   
-  // 대시보드 시트에서 환율 정보를 가져옵니다.
-  return dashboardSheet.getRange("B15").getValue();
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    var exchangeRate = dashboardSheet.getRange("B15").getValue();
+    
+    if (exchangeRate !== "#ERROR!" && !isNaN(exchangeRate) && exchangeRate !== "") {
+      Logger.log(`환율 성공적으로 받아옴: ${exchangeRate} (시도 ${attempt}번째)`);
+      return exchangeRate;
+    }
+    
+    Logger.log(`환율 받아오기 실패 (시도 ${attempt}/${maxRetries}). 현재 값: ${exchangeRate}`);
+    
+    if (attempt < maxRetries) {
+      Logger.log(`${retryDelay/1000}초 후 다시 시도합니다...`);
+      Utilities.sleep(retryDelay);
+    }
+  }
+  
+  Logger.log(`환율을 ${maxRetries}번 시도 후에도 받아오지 못했습니다. 오류 처리가 필요합니다.`);
+  return null;
 }
 
 function getTickerClassifications() {
@@ -471,4 +521,25 @@ function processShares(shares, classification) {
   } else {
     return Math.floor(parseFloat(shares));
   }
+}
+
+function getStockPrice(sheet, row, col, ticker, maxRetries = 20, retryDelay = 2000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    var price = sheet.getRange(row, col).getValue();
+    
+    if (price !== "#ERROR!" && !isNaN(price) && price !== "") {
+      Logger.log(`${ticker} 가격 성공적으로 받아옴: ${price} (시도 ${attempt}번째)`);
+      return price;
+    }
+    
+    Logger.log(`${ticker} 가격 받아오기 실패 (시도 ${attempt}/${maxRetries}). 현재 값: ${price}`);
+    
+    if (attempt < maxRetries) {
+      Logger.log(`${retryDelay/1000}초 후 다시 시도합니다...`);
+      Utilities.sleep(retryDelay);
+    }
+  }
+  
+  Logger.log(`${ticker} 가격을 ${maxRetries}번 시도 후에도 받아오지 못했습니다. 오류 처리가 필요합니다.`);
+  return null;
 }
