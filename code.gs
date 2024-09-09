@@ -32,6 +32,7 @@ function updateStockData() {
   var dateString = Utilities.formatDate(today, Session.getScriptTimeZone(), "yyyy-MM-dd");
 
   var isFirstDayOfMonth = today.getDate() === 1;
+  var events = []; // 발생한 모든 이벤트를 저장할 배열  
   var eventOccurred = false;
   var eventTicker = null;
   var eventType = null;
@@ -102,37 +103,52 @@ function updateStockData() {
                                         dateString, ticker, currentPrice, highPrice);
     
     if (stageResult.eventOccurred) {
-      eventOccurred = true;
-      eventTicker = ticker;
-      eventType = stageResult.eventType;                 
+      events.push({
+        ticker: ticker,
+        type: stageResult.eventType
+      });               
     }
-  }
-
-  Logger.log("이벤트 발생 여부: " + eventOccurred);
-  if (eventOccurred) {
-    Logger.log("이벤트 티커: " + eventTicker + ", 이벤트 타입: " + eventType);
   }
 
   // 매월 첫날이거나 이벤트가 발생했을 때 투자 기록 업데이트
-  if (isFirstDayOfMonth || eventOccurred) {
-    Logger.log("투자 기록 업데이트 조건 충족");
-    Logger.log("티커 목록: " + JSON.stringify(tickers));
-    Logger.log("현재 가격 목록: " + JSON.stringify(currentPrices));
-    Logger.log("고점 목록: " + JSON.stringify(highPrices));
-    Logger.log("하락 비율 목록: " + JSON.stringify(declineRatios));
+  if (isFirstDayOfMonth) {
+    events.push({ type: "매달기록" });
+  }
 
-    //환율 받기
+  if (events.length > 0) {
+    Logger.log("발생한 이벤트: " + JSON.stringify(events));
+
     var exchangeRate = getExchangeRate();
     if (exchangeRate === null) {
       Logger.log("환율을 받아오지 못했습니다. 스크립트를 종료합니다.");
-      return; // 환율을 받아오지 못하면 스크립트 종료
+      return;
     }
+
     var tickerClassifications = getTickerClassifications();
 
-    Logger.log("환율: " + exchangeRate);
-    Logger.log("티커 분류: " + JSON.stringify(tickerClassifications));
+    // 각 이벤트에 대해 순차적으로 투자 기록 업데이트
+    for (var i = 0; i < events.length; i++) {
+      var event = events[i];
+      Logger.log(`이벤트 처리 중 (${i + 1}/${events.length}): ${event.type} ${event.ticker || ''}`);
 
-    updateInvestmentRecord(investmentRecordSheet, volatilityAdjustmentSheet, tickers, currentPrices, highPrices, declineRatios, isFirstDayOfMonth ? "매달기록" : eventType, eventTicker);
+      updateInvestmentRecord(
+        investmentRecordSheet, 
+        volatilityAdjustmentSheet, 
+        tickers, 
+        currentPrices, 
+        highPrices, 
+        declineRatios, 
+        event.type, 
+        event.ticker, 
+        exchangeRate, 
+        tickerClassifications
+      );
+
+      // 다음 이벤트 처리 전 잠시 대기 (선택사항)
+      if (i < events.length - 1) {
+        Utilities.sleep(1000); // 1초 대기
+      }
+    }
   } else {
     Logger.log("투자 기록 업데이트 조건 미충족");
   }
