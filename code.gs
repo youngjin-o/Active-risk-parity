@@ -48,7 +48,20 @@ function updateStockData() {
     var ticker = tickers[col - 2];
     if (!ticker) continue;
 
-    var currentPrice = getStockPrice(dashboardSheet, currentPriceRow, col, ticker);
+    var currentPrice;
+    if (ticker === "전국아파트실거래가") {
+      var realEstateData = getRealEstatePrice();
+      if (realEstateData) {
+        currentPrice = realEstateData.value;
+        dashboardSheet.getRange(currentPriceRow, col).setValue(currentPrice);
+      } else {
+        Logger.log("부동산 가격을 받아오지 못했습니다.");
+        continue;
+      }
+    } else {
+      currentPrice = getStockPrice(dashboardSheet, currentPriceRow, col, ticker);
+    }
+
     if (currentPrice === null) {
       // 가격을 받아오지 못했을 때의 처리
       Logger.log(`${ticker}의 가격을 받아오지 못했습니다. 이 종목은 건너뜁니다.`);
@@ -271,31 +284,42 @@ function createDailyTrigger() {
   ScriptApp.newTrigger('updateStockData')
       .timeBased()
       .everyDays(1)
-      .atHour(9)
+      .atHour(10)
       .create();
 }
 
-function updateInvestmentRecord(investmentRecordSheet, volatilityAdjustmentSheet, tickers, currentPrices, highPrices, declineRatios, event, triggerTicker) {
+function updateInvestmentRecord(investmentRecordSheet, volatilityAdjustmentSheet, tickers, currentPrices, highPrices, declineRatios, event, triggerTicker, exchangeRate, tickerClassifications) {
   try {
     var lastRow = investmentRecordSheet.getLastRow();
     var newRowNumber = lastRow + 1;
     var today = new Date();
     var dateString = Utilities.formatDate(today, Session.getScriptTimeZone(), "yyyy-MM-dd");
 
+    // 부동산 데이터 제외
+    var filteredTickers = [];
+    var filteredCurrentPrices = [];
+    var filteredHighPrices = [];
+    var filteredDeclineRatios = [];
+    var filteredTickerClassifications = {};
+
+    for (var i = 0; i < tickers.length; i++) {
+      if (tickers[i] !== "전국아파트실거래가") {
+        filteredTickers.push(tickers[i]);
+        filteredCurrentPrices.push(currentPrices[i]);
+        if (highPrices && highPrices[i]) filteredHighPrices.push(highPrices[i]);
+        if (declineRatios && declineRatios[i]) filteredDeclineRatios.push(declineRatios[i]);
+        filteredTickerClassifications[tickers[i]] = tickerClassifications[tickers[i]];
+      }
+    }
+
     // 이전 행의 데이터 가져오기
-    var previousRowData = getPreviousRowData(investmentRecordSheet, lastRow, tickers.length);
-
-    // 환율 정보 가져오기
-    var exchangeRate = getExchangeRate();
-
-    // 티커별 분류 정보 가져오기
-    var tickerClassifications = getTickerClassifications();
+    var previousRowData = getPreviousRowData(investmentRecordSheet, lastRow, filteredTickers.length);
 
     var newRowData;
     if (event === "매달기록") {
-      newRowData = calculateMonthlyRecord(dateString, previousRowData, tickers, currentPrices, newRowNumber, exchangeRate, tickerClassifications);
+      newRowData = calculateMonthlyRecord(dateString, previousRowData, filteredTickers, filteredCurrentPrices, newRowNumber, exchangeRate, filteredTickerClassifications);
     } else {
-      newRowData = calculateDeclineEvent(dateString, previousRowData, tickers, currentPrices, event, triggerTicker, volatilityAdjustmentSheet, newRowNumber, exchangeRate, tickerClassifications);
+      newRowData = calculateDeclineEvent(dateString, previousRowData, filteredTickers, filteredCurrentPrices, event, triggerTicker, volatilityAdjustmentSheet, newRowNumber, exchangeRate, filteredTickerClassifications);
     }
 
     // 새로운 행 추가
@@ -519,7 +543,7 @@ function getTickerClassifications() {
 function calculatePriceInKRW(ticker, price, exchangeRate, classification) {
   Logger.log(`calculatePriceInKRW: ticker=${ticker}, price=${price}, exchangeRate=${exchangeRate}, classification=${classification}`);
   
-  if (classification === "한국주식" || classification === "한국ETF") {
+  if (classification === "한국주식" || classification === "한국ETF" || classification === "한국아파트") {
     Logger.log(`${ticker}: 한국 주식/ETF, 원래 가격 반환`);
     return price;
   } else if (classification === "미국주식" || classification === "미국ETF" || classification === "코인" || classification === "미국채권") {
@@ -558,4 +582,93 @@ function getStockPrice(sheet, row, col, ticker, maxRetries = 20, retryDelay = 20
   
   Logger.log(`${ticker} 가격을 ${maxRetries}번 시도 후에도 받아오지 못했습니다. 오류 처리가 필요합니다.`);
   return null;
+}
+
+function getRealEstatePrice() {
+  var apiKey = "2e4f2ef8f5964d9f80eba4b0fad27d04"; // 실제 API 키로 교체해야 합니다
+  var baseUrl = "https://www.reb.or.kr/r-one/openapi/SttsApiTblData.do";
+
+  // 현재 날짜 가져오기
+  var currentDate = new Date();
+  
+  // 최대 12개월 전까지 시도
+  for (var i = 1; i <= 12; i++) {
+    // i개월 전 날짜 계산
+    var targetDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+    var yearMonth = Utilities.formatDate(targetDate, "GMT+9", "yyyyMM");
+
+    var params = {
+      KEY: apiKey,
+      Type: "xml",
+      pIndex: 1,
+      pSize: 100,
+      STATBL_ID: "A_2024_00178",
+      DTACYCLE_CD: "MM",
+      WRTTIME_IDTFR_ID: yearMonth,
+      CLS_ID: "500001"
+    };
+
+    var url = baseUrl + "?" + Object.keys(params).map(key => key + "=" + encodeURIComponent(params[key])).join("&");
+
+    try {
+      var response = UrlFetchApp.fetch(url);
+      var xmlContent = response.getContentText();
+      Logger.log("API 응답: " + xmlContent); // 응답 내용 로깅
+
+      var document = XmlService.parse(xmlContent);
+      var root = document.getRootElement();
+      
+      // 안전한 방식으로 RESULT 요소 찾기
+      var resultElement = root.getChild('RESULT') || 
+                          (root.getChild('head') ? root.getChild('head').getChild('RESULT') : null);
+
+      if (resultElement === null) {
+        Logger.log("RESULT 요소를 찾을 수 없습니다. XML 구조: " + xmlContent);
+        continue; // 다음 월로 넘어감
+      }
+
+      var resultCode = resultElement.getChildText('CODE');
+      var resultMessage = resultElement.getChildText('MESSAGE');
+
+      if (resultCode === 'INFO-000') {
+        // 성공적으로 데이터를 찾음
+        var rowElement = root.getChild('row');
+        if (rowElement) {
+          var data = {
+            date: rowElement.getChildText('WRTTIME_DESC'),
+            value: parseFloat(rowElement.getChildText('DTA_VAL'))
+          };
+          Logger.log("성공적으로 데이터를 찾았습니다: " + JSON.stringify(data));
+          return data;
+        } else {
+          Logger.log("row 요소를 찾을 수 없습니다.");
+          continue;
+        }
+      } else if (resultCode === 'INFO-200') {
+        // 데이터가 없음, 다음 달로 넘어감
+        Logger.log(yearMonth + "에 대한 데이터가 없습니다. 이전 달을 확인합니다.");
+        continue;
+      } else {
+        // 다른 오류
+        Logger.log("API 오류: " + resultMessage);
+        continue;
+      }
+    } catch (error) {
+      Logger.log("API 호출 중 오류 발생: " + error.toString());
+      continue; // 다음 월로 넘어감
+    }
+  }
+  
+  // 12개월 동안 데이터를 찾지 못함
+  Logger.log("최근 12개월 동안 데이터를 찾지 못했습니다.");
+  return null;
+}
+
+function testRealEstateAPI() {
+  var priceData = getRealEstatePrice();
+  if (priceData !== null) {
+    Logger.log("가져온 지가지수 데이터: " + JSON.stringify(priceData));
+  } else {
+    Logger.log("지가지수 데이터를 가져오는데 실패했습니다.");
+  }
 }
