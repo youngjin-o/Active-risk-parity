@@ -198,7 +198,7 @@ function checkDeclineStage(sheet, alertSheet, col, declineRatio, decline1, decli
 
 function getNewRatioFromVolatilitySheet(sheet, ticker, event) {
   // 헤더 행 찾기
-  var headerRow = sheet.getRange("A1:A").getValues().flat().indexOf("티커") + 1;
+  var headerRow = sheet.getRange("A:A").getValues().flat().indexOf("티커") + 1;
   
   // 티커 열 찾기
   var tickerColumn = sheet.getRange(headerRow, 1, 1, sheet.getLastColumn()).getValues()[0].indexOf(ticker) + 1;
@@ -223,8 +223,19 @@ function getNewRatioFromVolatilitySheet(sheet, ticker, event) {
       throw new Error(`알 수 없는 이벤트: ${event}`);
   }
   
-  // 새로운 비율 가져오기
-  var newRatio = sheet.getRange(ratioRow, tickerColumn).getValue();
+  // 진입비율 가져오기
+  var entryRatio = sheet.getRange(ratioRow, tickerColumn).getValue();
+  
+  // 레버리지비율 가져오기
+  var leverageRow = sheet.getRange("A:A").getValues().flat().indexOf("레버리지 비율") + 1;
+  var leverageRatio = sheet.getRange(leverageRow, tickerColumn).getValue();
+  
+  // 자산배수 찾기
+  var assetMultiplierRow = sheet.getRange("A:A").getValues().flat().indexOf("자산배수") + 1;
+  var assetMultiplier = sheet.getRange(assetMultiplierRow, 2).getValue();
+  
+  // 새로운 비율 계산
+  var newRatio = entryRatio * leverageRatio * assetMultiplier;
   
   // 백분율을 소수점으로 변환 (예: 5% -> 0.05)
   return newRatio / 100;
